@@ -15,7 +15,8 @@ library(spData)
 library(terra)
 ```
 
-Load dataframes 
+Load dataframes
+
 ```{r}
 # Dams
 current_dams <- read_sf(here::here('data', 'GRanD_Version_1_3')) %>% 
@@ -41,26 +42,36 @@ asia_rivers <- read_sf(here::here('data', 'asia_HydroRIVERS.gdb', 'HydroRIVERS_v
 
 ```
 
-Making `future_dams` spatial  
+Making `future_dams` spatial
+
 ```{r}
 future_dams <- st_as_sf(future_dams,
          coords = c('lon_cleaned', 'lat_cleaned'), 
          crs = st_crs(current_dams))
 ```
 
-Nepal Basin 
+Nepal Basin
+
 ```{r}
+# Filter water basin to Nepal Level 
 nepal_basin <- basin_level3 %>% 
   filter(hybas_id == 4030025450)
+
+rm(basin_level3) # Remove basin df 
 ```
 
-Filtering Rivers to order 2 or 3 
+Filtering Rivers to order 2 or 3
+
 ```{r}
+# Filter rivers at different order levels 
 asia_rivers2 <- asia_rivers %>% 
   filter(ord_clas == 2)
 
 asia_rivers3 <- asia_rivers %>% 
   filter(ord_clas == 3)
+
+asia_rivers4 <- asia_rivers %>% 
+  filter(ord_clas == 4)
 
 # Look at difference between river order 2 vs 3 
 tm_shape(asia_rivers2) + 
@@ -70,26 +81,59 @@ tm_shape(asia_rivers3) +
   tm_lines()
 ```
 
+Making geometeries valid
 
-Making geometeries valid 
 ```{r}
 current_dams <- st_make_valid(current_dams)
 future_dams <- st_make_valid(future_dams)
 nepal_basin <- st_make_valid(nepal_basin)
-asia_rivers2 <- st_make_valid(asia_rivers2)
-asia_rivers3 <- st_make_valid(asia_rivers3)
+#asia_rivers2 <- st_make_valid(asia_rivers2)
+#asia_rivers3 <- st_make_valid(asia_rivers3)
 ```
 
-Crop dams and rivers to Nepal basin 
+Crop dams and rivers to Nepal basin
+
 ```{r}
+# Crop dams and rivers to Nepal 
 nepal_current_dams <- st_intersection(nepal_basin, current_dams)
 nepal_future_dams <- st_intersection(nepal_basin, future_dams)
+
+nepal_rivers <- asia_rivers3 %>%
+  st_filter(y = nepal_basin, .predicate = st_intersects)
+
+
+nepal_rivers3 <- asia_rivers3 %>%
+  st_filter(y = nepal_basin, .predicate = st_intersects)
+
+nepal_rivers4 <- asia_rivers4 %>%
+  st_filter(y = nepal_basin, .predicate = st_intersects)
 #nepal_rivers3 <- st_intersection(nepal_basin, asia_rivers3)
 #nepal_rivers2 <- st_intersection(nepal_basin, asia_rivers2)
+
+
+rm(list = c('asia_rivers', 'asia_rivers2', 'asia_rivers3', 'current_dams', 'future_dams'))
 ```
 
-Map! 
+Bounding box around 1 river with a couple of dams on it
+
 ```{r}
+# Creating bounding box of 1 river
+box_poly <- st_as_sfc(
+  st_bbox(c(xmin = 83.56, xmax = 83.6987, ymin = 28.328360, ymax = 28.704314), 
+          crs = st_crs(nepal_basin)))
+
+# Check CRS 
+st_crs(nepal_basin) == st_crs(box_poly)
+```
+
+Map!
+
+```{r}
+
+#tmap_mode("view")
+#tmap_mode("plot")
+
+
 tm_shape(nepal_basin) + 
   tm_polygons(fill_alpha = 0.4, lwd = 2.5) + 
   tm_basemap('Esri.WorldTopoMap') + 
@@ -97,15 +141,88 @@ tm_shape(nepal_basin) +
   tm_dots(fill = "red") + 
   tm_shape(nepal_future_dams) + 
   tm_dots(fill = "blue") + 
-  #tm_shape(nepal_rivers2) + 
-  #tm_lines() + 
+  tm_shape(nepal_rivers) + 
+  tm_lines() + 
   tm_add_legend(type = "polygons", 
                 labels = c("Current Dams", "Future Dams"), 
                 fill = c("red", "blue"), 
                 title = "Dam Status") + 
   tm_title(text = "Dams in Nepal") + 
+  tm_shape(box_poly) + 
+  tm_borders(lwd =2, col = "goldenrod")+ 
   tm_compass() + 
-  tm_scalebar()
+  tm_scalebar() 
+
+```
+
+Crop to bounding box
+
+```{r}
+trial_current_dams <- st_intersection(box_poly, nepal_current_dams)
+trial_future_dams <- st_intersection(box_poly, nepal_future_dams)
+
+trial_river <- nepal_rivers %>%
+  st_filter(y = box_poly, .predicate = st_intersects)
+
+```
+
+```{r}
+tm_shape(trial_future_dams) + 
+  tm_dots(fill = "blue") + 
+  tm_shape(trial_river) +
+  tm_lines() +
+  tm_basemap('Esri.WorldTopoMap')
+```
+
+## Finding the distance between future dams on this river
+
+```{r}
+# Check CRS 
+st_crs(trial_future_dams) == st_crs(trial_river)
+
+library(riverconn)
+```
+
+```{r}
+# Union river: multilinestrings -> 1 linestring 
+trial_river <- st_union(trial_river)
+
+# Check if dams point overlap 
+trial_future_dams %>% 
+  st_equals() # Returns TRUE id 2 geometeries are the same 
+
+```
+
+Form the River system based on the intersection of the dams
+
+-   The dam become verticies (nodes) of the river
+
+-   `lwgeom::st_split` splits an an sf 'MULTILINESTRING' object -\> sf multiple 'LINESTRING' geometeries based on the position of the points that perfectly overlap with the polyline
+
+-   `st_distance` is used from points to line to see if 'perfectly overlap'. If `st_distance` returns 0, the dams are on the river. 
+
+```{r}
+# Split polyline
+trial_river_simplified <- lwgeom::st_split(trial_river, trial_future_dams) %>% # Splits 
+  st_collection_extract(., "LINESTRING") %>% 
+  data.frame(id = 1:length(.), geometry = .) %>% 
+  st_as_sf() %>% 
+  mutate(length = st_length(.))
+
+# Check with Map 
+tm_shape(trial_river_simplified) + 
+  tm_lines() + 
+  tm_shape(trial_future_dams) + 
+  tm_dots() +
+  tm_basemap('Esri.WorldTopoMap')
+
+```
+
+Snap the dam points to the river network 
+```{r}
+snap_to_river(trial_future_dams, 
+              trial_river_simplified, 
+              max_dist = 1000)
 
 ```
 
