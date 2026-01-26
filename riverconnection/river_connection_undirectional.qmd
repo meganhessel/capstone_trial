@@ -1,0 +1,95 @@
+---
+title: "river_connection"
+format: html
+---
+
+```{r}
+library(sfnetworks)
+library(sf)
+library(tidygraph)
+library(dplyr)
+library(purrr)
+library(TSP)
+```
+
+## Transform data to `sfnetwork` type and calculates edge weights
+
+-   Spatial networks have 2 data tables:
+    -   Nodes (junctions/endpoints)
+    -   Edges (line connecting points)
+-   Create another column: \`weight\` for river segment *distance*
+
+```{r}
+net <- as_sfnetwork(trial_river) %>% # convert river geom into spatial network 
+  activate("edges") %>%  # "Next operation applied to edges table (not node table)"
+  mutate(weight = edge_length()) # calculate spatial length of each edge (river segment)
+
+net_df <- as_tibble(net) # makes sfnetwork a df 
+```
+
+## Define path
+
+-   Shortest path from node \# (3) to \# (15) using `weight` column
+
+    -   Would count edges \[fewest segments\] instead of distance if not `weight`
+    -   \# = Node IDs (row number in nodes table)
+
+-   Returns: list of nodes that are the shortest path/route (EX: `[3, 7, 12, 15]` = path goes thru nodes 3→7→12→15)
+
+```{r}
+# Define path: find shortest path from node 3 and 15 using weight column
+paths = st_network_paths(net, from = 3, to = 15, weight = "weight") 
+```
+
+## List nodes and edges
+
+```{r}
+# lists nodes
+paths %>%
+  slice(1) %>% # first row (first path found)
+  pull(node_paths) %>% # extract Node_path (juctions/points you pass thru)
+  unlist() # List -> vector 
+# lists edges
+paths %>%
+  slice(1) %>%
+  pull(edge_paths) %>% # extract edge_path (river segments)
+  unlist()
+```
+
+## Plot
+
+3 levels to the plotting:
+
+1.  Base layer: plot entire path `plot(net)`
+
+2.  Path: (*use function*)
+
+3.  Start and end node points
+
+```{r}
+plot_path = function(node_path) { # input = vector of node IDs as table 
+  net %>% 
+    activate("nodes") %>% # Node table 
+    slice(node_path) %>% # Select nodes in the path 
+    plot(cex = 1.5, lwd = 1.5, add = TRUE) # plot thise nodes on top od existing plot 
+}
+
+
+colors = sf.colors(3, categorical = TRUE) # 3 distcict colors for viz 
+
+
+# Plotting entire network in grey (base layer)
+plot(net, col = "grey")
+
+# Plot nodes
+paths %>%
+  pull(node_paths) %>% # extract Node_path (juctions/points you pass thru) of `paths`
+  walk(plot_path) # applies `plot_path` function for each path 
+
+# Plot start and end nodes 
+net %>%
+  activate("nodes") %>% 
+  st_as_sf() %>% # convert nodes to sf object for plotting
+  slice(c(3, 15)) %>% # Get only nodes 3 and 15 (start and end)
+  plot(col = colors, pch = 8, cex = 2, lwd = 2, add = TRUE) # Plot as stars, in color, on top
+```

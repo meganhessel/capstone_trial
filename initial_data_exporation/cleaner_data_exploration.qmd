@@ -26,11 +26,10 @@ future_dams <- read_csv(here::here('data', 'FHReD_2015_future_dams', 'FHRed_2015
   clean_names()
 
 # Population
-global_pop_sf <- read_stars(here::here('data', 'global_pop_2020_CN_1km_R2025A_UA_v1.tif')) %>% 
-  clean_names()
-
-global_pop_rast <- rast(here::here('data', 'global_pop_2020_CN_1km_R2025A_UA_v1.tif')) %>% 
-  clean_names()
+#global_pop_sf <- read_stars(here::here('data', 'global_pop_2020_CN_1km_R2025A_UA_v1.tif')) %>% 
+  #clean_names()
+#global_pop_rast <- rast(here::here('data', 'global_pop_2020_CN_1km_R2025A_UA_v1.tif')) %>% 
+  #clean_names()
 
 # Water Basin
 basin_level3 <- read_sf(here::here('data', 'asia_basin_levels', 'hybas_as_lev03_v1c.shp')) %>% 
@@ -64,25 +63,25 @@ Filtering Rivers to order 2 or 3
 
 ```{r}
 # Filter rivers at different order levels 
-asia_rivers2 <- asia_rivers %>% 
-  filter(ord_clas == 2)
+
+#asia_rivers2 <- asia_rivers %>% 
+  #filter(ord_clas == 2)
 
 asia_rivers3 <- asia_rivers %>% 
   filter(ord_clas == 3)
 
-asia_rivers4 <- asia_rivers %>% 
-  filter(ord_clas == 4)
+#asia_rivers4 <- asia_rivers %>% 
+  #filter(ord_clas == 4)
 
 # Look at difference between river order 2 vs 3 
-tm_shape(asia_rivers2) + 
-  tm_lines()
+#tm_shape(asia_rivers2) + 
+  #tm_lines()
 
 tm_shape(asia_rivers3) + 
   tm_lines()
 ```
 
 Making geometeries valid
-
 ```{r}
 current_dams <- st_make_valid(current_dams)
 future_dams <- st_make_valid(future_dams)
@@ -101,12 +100,6 @@ nepal_future_dams <- st_intersection(nepal_basin, future_dams)
 nepal_rivers <- asia_rivers3 %>%
   st_filter(y = nepal_basin, .predicate = st_intersects)
 
-
-nepal_rivers3 <- asia_rivers3 %>%
-  st_filter(y = nepal_basin, .predicate = st_intersects)
-
-nepal_rivers4 <- asia_rivers4 %>%
-  st_filter(y = nepal_basin, .predicate = st_intersects)
 #nepal_rivers3 <- st_intersection(nepal_basin, asia_rivers3)
 #nepal_rivers2 <- st_intersection(nepal_basin, asia_rivers2)
 
@@ -156,7 +149,6 @@ tm_shape(nepal_basin) +
 ```
 
 Crop to bounding box
-
 ```{r}
 trial_current_dams <- st_intersection(box_poly, nepal_current_dams)
 trial_future_dams <- st_intersection(box_poly, nepal_future_dams)
@@ -179,6 +171,11 @@ tm_shape(trial_future_dams) +
 ```{r}
 # Check CRS 
 st_crs(trial_future_dams) == st_crs(trial_river)
+st_crs(trial_future_dams) == st_crs(trial_river_simplified)
+
+st_crs(trial_future_dams) # EPSG,32644]
+st_crs(trial_river) # EPSG",4326
+st_crs(trial_river_simplified) # EPSG",4326
 
 library(riverconn)
 ```
@@ -218,11 +215,86 @@ tm_shape(trial_river_simplified) +
 
 ```
 
+Messing with crs and classes 
+```{r}
+trial_future_dams <- st_transform(trial_future_dams, crs = 'EPSG:32644')
+trial_river_simplified <- st_transform(trial_river_simplified, crs = 'EPSG:32644')
+trial_river <- st_transform(trial_river, crs = 'EPSG:32644')
+
+trial_future_dams<- st_as_sf(trial_future_dams)
+trial_river<- st_as_sf(trial_river)
+
+```
+
+
+Snapping the dam points to the river line 
+```{r}
+# Snap 2 different ways 
+snapped <- stppSim::snap_points_to_lines(trial_future_dams, trial_river_simplified) # this worked better! 
+
+source(here::here("snap_to_river_func.R"))
+snapped2 <- snap_to_river(trial_future_dams, trial_river)
+
+# Looking at the difference snaps 
+tm_shape(snapped2)+ 
+  tm_dots(fill = "blue", fill_alpha = 0.5) + # Snapped a dot not on the line 
+  tm_shape(snapped) + 
+  tm_dots(fill = "red", fill_alpha = 0.5) # Snapped only dots on the line 
+
+# retain only dams that were snapped 
+dams_snapped <- snapped[st_contains(trial_river_simplified %>% st_sf(), snapped, prepared = FALSE)[[1]],]
+st_distance(dams_snapped, trial_river_simplified) %>% sum
+
+```
+
+
+```{r}
+# Find straight Eudliean distance 
+st_distance(snapped) # Returns pairwise distance matrix 
+
+# Distance along line 
+sf::st_line_locate_point(trial_river[1,], snapped)
+```
+
+```{r}
+
+```
+
+
+
+
+
 Snap the dam points to the river network 
 ```{r}
-snap_to_river(trial_future_dams, 
-              trial_river_simplified, 
-              max_dist = 1000)
+library(riverdist)
+
+# Make a "rivernetwork" 
+line <- line2network(sf = trial_river_simplified, reproject = 'EPSG:32644') 
+topologydots(rivers=line) # Check for connected-ness
+plot(x = line)
+
+# Getting vectors of x and y 
+coords_matrix <- st_coordinates(trial_future_dams)
+coords_df <- as.data.frame(coords_matrix)
+coords_df
+
+# convert x-y coords to a river network coord by snapping points to nearest river vertex 
+xy_line <- xy2segvert(x = coords_df$X, y = coords_df$Y, rivers = line)
+# `snapdist`: Euclidean distance (straight-line distance) between the original XY point and the point on the river network it was snapped to.
+
+hist(xy_line$snapdist, main="snapping distance (m)")
+
+
+
+
+pointshp2segvert(trial_future_dams, rivers = line)
+
+topologydots(rivers=line)
+
+riverdistance(startseg = 1, endseg = 3, startvert = 1, endvert = 3, rivers = line, map=TRUE)
+```
+
+```{r}
 
 ```
 
